@@ -126,31 +126,46 @@ def _render_stale_analysis(events: list[CacheEvent], t_start: float):
         found_any = True
         print(f"  {BOLD}Stale-read window  (key={key}){RESET}")
 
+        # SYNC, SYNC_SKIP, or EXPIRE all close the stale window
+        closing_ops = [e for e in k_events if e.op in ("SYNC", "SYNC_SKIP", "EXPIRE")]
+
         for write in writes:
-            # find the sync that closed this write's window
-            relevant_syncs = [s for s in syncs if s.t > write.t and s.worker != write.worker]
-            if not relevant_syncs:
-                print(f"    {YELLOW}▲ WRITE{RESET} by worker {write.worker} at t={write.t:.0f}ms  — sync not yet observed")
+            target = "B" if write.worker == "A" else "A"
+            # closing event on the target worker (for sync-based close)
+            # OR on either worker (for TTL/expiry-based close)
+            relevant = sorted(
+                [e for e in closing_ops if e.t > write.t and
+                 (e.op == "EXPIRE" or e.worker == target)],
+                key=lambda e: e.t
+            )
+            if not relevant:
+                print(f"    {YELLOW}▲ WRITE{RESET} by worker {write.worker} at t={write.t:.0f}ms  — window not yet closed")
                 continue
 
-            sync_evt  = min(relevant_syncs, key=lambda s: s.t)
-            window_ms = sync_evt.t - write.t
+            close_evt = relevant[0]
+            window_ms = close_evt.t - write.t
             stale_cnt = sum(1 for s in stales
-                            if write.t <= s.t <= sync_evt.t
-                            and s.worker != write.worker)
+                            if write.t <= s.t <= close_evt.t
+                            and s.worker == target)
+            close_label = {"SYNC": "synced", "SYNC_SKIP": "sync (skipped — tie)",
+                           "EXPIRE": "TTL expired"}.get(close_evt.op, close_evt.op)
 
-            # draw the window bar
-            bar_w   = 40
-            sync_pos = min(int(window_ms / 2000 * bar_w), bar_w - 1)  # scale to 2 s
-            bar      = (BG_RED + " " * sync_pos + RESET +
-                        CYAN + "⟳" + RESET +
-                        DIM + " " * (bar_w - sync_pos) + RESET)
+            is_expire  = close_evt.op == "EXPIRE"
+            close_icon = MAGENTA + "✕" + RESET if is_expire else CYAN + "⟳" + RESET
+            end_colour = MAGENTA if is_expire else CYAN
 
             print(f"    {YELLOW}▲{RESET} WRITE  by {write.worker}  t={write.t:.0f}ms")
-            print(f"    {CYAN}⟳{RESET} SYNC   to {sync_evt.worker}  t={sync_evt.t:.0f}ms")
+            print(f"    {close_icon} {close_evt.op:<10} on {close_evt.worker}  t={close_evt.t:.0f}ms")
             print(f"    {RED}◆{RESET} {stale_cnt} stale read(s) during window")
+
+            bar_w    = 40
+            sync_pos = min(int(window_ms / 2000 * bar_w), bar_w - 1)
+            bar      = (BG_RED + " " * sync_pos + RESET +
+                        end_colour + "⟳" + RESET +
+                        DIM + " " * (bar_w - sync_pos) + RESET)
+
             print(f"\n    |{bar}|")
-            print(f"     {RED}←── stale window: {window_ms:.0f} ms ───────────────{RESET}{CYAN}synced{RESET}\n")
+            print(f"     {RED}←── stale window: {window_ms:.0f} ms ───────────────{RESET}{end_colour}{close_label}{RESET}\n")
 
     if not found_any:
         print(f"  {GREEN}No stale reads observed.{RESET}  "

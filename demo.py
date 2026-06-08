@@ -108,6 +108,10 @@ def scenario_stale():
         if ra2.response == rb2.response:
             print(f"  {GREEN}  Both agree: {ra2.response[:55]}…  ✓{RESET}")
             note(f"Converged on version v{ra2.version} (last-write-wins: higher version)")
+        elif ra2.version == rb2.version:
+            print(f"  {YELLOW}  Same-version tie — A and B both wrote v{ra2.version} with different content.{RESET}")
+            note("Neither sync overwrote the other (same version = draw).")
+            note("In production: use a tiebreaker (higher-quality model wins, or vector clocks).")
         else:
             print(f"  {RED}  Still diverged! A=v{ra2.version} B=v{rb2.version}{RESET}")
 
@@ -228,7 +232,7 @@ def scenario_conflict():
     # Always use real time so the background Timer fires
     time.sleep(SYNC_DELAY + 0.3)
 
-    step("Post-sync — both workers converge")
+    step("Post-sync — checking convergence")
     ra2 = cache.get("A", PROMPT)
     rb2 = cache.get("B", PROMPT)
     if ra2 and rb2:
